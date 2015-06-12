@@ -1,0 +1,3 @@
+---- hls_read_header Matches (2 in 1 files) ----
+hls.c (Z:\ffmpeg\libavformat):static int hls_read_header(AVFormatContext *s)
+hls.c (Z:\ffmpeg\libavformat):    .read_header    = hls_read_header,
