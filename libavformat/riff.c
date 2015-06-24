@@ -324,6 +324,7 @@ const AVCodecTag ff_codec_bmp_tags[] = {
 
     { AV_CODEC_ID_HEVC,         MKTAG('h', 'v', 'c', '1') },
     { AV_CODEC_ID_HEVC,         MKTAG('h', 'e', 'v', '1') },
+    { AV_CODEC_ID_HEVC,         MKTAG('h', 'm', '1', '0') },        
     { AV_CODEC_ID_NONE,         0 }
 };
 

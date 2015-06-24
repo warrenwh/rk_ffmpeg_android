@@ -171,6 +171,13 @@ static int tcp_open(URLContext *h, const char *uri, int flags)
             else
                 goto fail;
         }
+        //Notify ip , IPV4 only for fjcmcc SQM
+        if(cur_ai->ai_family == AF_INET)
+        {
+            char* ipaddr = inet_ntoa(((struct sockaddr_in *)(ai->ai_addr))->sin_addr);
+            int int_addr = inet_addr(ipaddr);
+            ff_send_message(&(h->interrupt_callback), MEDIA_INFO_SERVER_CHANGE, int_addr);
+        }
     }
 
     h->is_streamed = 1;

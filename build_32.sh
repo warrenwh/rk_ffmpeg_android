@@ -5,11 +5,13 @@
 # FFmpeg builds script for Android+ARM
 
 ######################################################
-NDK=../../../android-ndk-r5
+NDK=/home/androd_ndk/android-ndk-r9d
 
-PLATFORM=$NDK/platforms/android-9/arch-arm
+#NDK=/home/mid_sdk/android-ndk-r9c
 
-PREBUILT=$PWD/../../prebuilt/linux-x86/toolchain/arm-eabi-4.4.3
+PLATFORM=$NDK/platforms/android-17/arch-arm
+
+PREBUILT=$NDK/toolchains/arm-linux-androideabi-4.6/prebuilt/linux-x86_64
 
 CPU=armv7-a
 
@@ -20,16 +22,16 @@ PREFIX=./android/$CPU
 EXTERN_SSL=$PWD/../../external/openssl/include
 
 
-EXTREN_SSL_LIB=$PWD/../../out/target/product/rk30sdk/obj/lib
+EXTREN_SSL_LIB=$PWD
 
 ./configure --target-os=linux  \
 						--prefix=$PREFIX \
 						--enable-cross-compile \
 						--extra-libs="-lgcc" \
 						--arch=arm \
-						--cc=$PREBUILT/bin/arm-eabi-gcc \
-						--cross-prefix=$PREBUILT/bin/arm-eabi- \
-						--nm=$PREBUILT/bin/arm-eabi-nm \
+						--cc=$PREBUILT/bin/arm-linux-androideabi-gcc \
+						--cross-prefix=$PREBUILT/bin/arm-linux-androideabi- \
+						--nm=$PREBUILT/bin/arm-linux-androideabi-nm \
 						--sysroot=$PLATFORM \
 						--extra-cflags="-I$PREFIX/include -I$EXTERN_SSL -O3 -fpic -DANDROID -DHAVE_SYS_UIO_H=1 -Dipv6mr_interface=ipv6mr_ifindex -fasm -Wno-psabi -fno-short-enums  -fno-strict-aliasing -finline-limit=300 $OPTIMIZE_CFLAGS " \
 						--disable-shared \
@@ -57,8 +59,7 @@ EXTREN_SSL_LIB=$PWD/../../out/target/product/rk30sdk/obj/lib
 						--enable-openssl \
 						--enable-protocols \
 						--enable-asm \
-						--enable-neon \
-						--disable-decoder=truehd 						
+						--enable-neon
 #make clean
 
 make  -j64 install
@@ -69,8 +70,8 @@ make  -j64 install
 #adds -fuse-ld=bfd and -fuse-ld=gold options to GCC driver.  It changes
 #collect2.c to pick either ld.bfd or ld.gold.
 
-$PREBUILT/bin/arm-eabi-ar d libavcodec/libavcodec.a inverse.o
+$PREBUILT/bin/arm-linux-androideabi-ar d libavcodec/libavcodec.a inverse.o
 
-$PREBUILT/bin/arm-eabi-ld -rpath-link=$PLATFORM/usr/lib -L$PLATFORM/usr/lib  -soname libffmpeg.so -shared -nostdlib  -z,noexecstack -Bsymbolic --whole-archive --no-undefined -o $PREFIX/libffmpeg.so libavcodec/libavcodec.a libavformat/libavformat.a libavutil/libavutil.a libswresample/libswresample.a libavdevice/libavdevice.a $EXTREN_SSL_LIB/libssl.so $EXTREN_SSL_LIB/libcrypto.so -lc -lm -lz -ldl -llog --warn-once  --dynamic-linker=/system/bin/linker $PREBUILT/lib/gcc/arm-eabi/4.4.3/libgcc.a
+$PREBUILT/bin/arm-linux-androideabi-ld -rpath-link=$PLATFORM/usr/lib -L$PLATFORM/usr/lib  -soname libffmpeg.so -shared -nostdlib  -z noexecstack -Bsymbolic --whole-archive --no-undefined -o $PREFIX/libffmpeg.so libavcodec/libavcodec.a libavformat/libavformat.a libavutil/libavutil.a libswresample/libswresample.a libavdevice/libavdevice.a $EXTREN_SSL_LIB/libssl.so $EXTREN_SSL_LIB/libcrypto.so -lc -lm -lz -ldl -llog --dynamic-linker=/system/bin/linker ../../prebuilts/gcc/linux-x86/arm/arm-eabi-4.6/lib/gcc/arm-eabi/4.6.x-google/libgcc.a
 
 

@@ -44,6 +44,8 @@
 #define DOWNLOAD_M3U8_END -1
 
 #define TIMEOUT 2000
+#define MAX_BANDWIDTH_QUEUE_SIZE 2000 //100 配置最近读取数据次数，用于计算数据下载速度
+#define ESTIMATE_BANDWIDTH_START 200  // 2  配置从第几次读取后开始计算下载速度
 
 /*
  * An apple http stream consists of a playlist with media segment files,
@@ -241,7 +243,7 @@ void  EnQueue(BandWidthQueue *pqueue, int32_t size, int64_t time)
         pqueue->mTotalSize += pnode->msize;
         pqueue->mTotalTimeUs += pnode->mtime;
     }
-    if (pqueue->num > 100)
+    if (pqueue->num > MAX_BANDWIDTH_QUEUE_SIZE)
     {
         DeQueue(pqueue);
     }    
@@ -270,7 +272,7 @@ int GetSize(BandWidthQueue *pqueue)
 }  
 int EstimateBandwidth(HLSContext *c,int32_t *bandwidth_bps)
 {
-        if(GetSize(c->BandWidthqueue) >= 2)
+        if(GetSize(c->BandWidthqueue) >= ESTIMATE_BANDWIDTH_START)
         {
         
             av_log(NULL, AV_LOG_DEBUG, "c->Bandwidthqueue->mTotalSize = %lld", c->BandWidthqueue->mTotalSize);
@@ -477,6 +479,7 @@ static int parse_playlist(HLSContext *c, const char *url,
                 params->type = 1;
                 params->willclose = 1;
                 params->url[0] = '\0';
+                params->last_seq_url[0] = '\0';
                 params->redirect = 0;
             }
         }
@@ -972,6 +975,28 @@ static int read_seqno(void *opaque)
     return c->read_seq_no;
 }
 
+static int search_segment_index(struct variant *v, char *url)
+{
+    for (int i=0; i<v->n_segments; i++) {
+        struct segment *seg = v->segments[i];
+        //av_log(NULL, AV_LOG_DEBUG, "search_segment_index seg(%d)url %s\n", i, seg->url);
+        if (strcmp(seg->url, url) == 0){
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int has_segment_discontinuity(struct variant *v)
+{
+    for (int i=0; i<v->n_segments; i++) {
+        struct segment *seg = v->segments[i];
+        if (seg->discontinuity) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 static int read_data(void *opaque, uint8_t *buf, int buf_size)
 {
@@ -979,6 +1004,7 @@ static int read_data(void *opaque, uint8_t *buf, int buf_size)
     HLSContext *c = v->parent->priv_data;
     int ret, i,retry = 0,parse_list_retry = 200,read_timeout_cnt = 0;
     int64_t last_load_timeUs = av_gettime();
+    int sliceSmooth = 0;//Slice smooth handle  by fxw
     if(v->parent->exit_flag){
         return AVERROR_EOF;
     }
@@ -996,12 +1022,11 @@ restart:
 
         reload_interval *= 1000000;
         int expired_list = 0;
-        int sliceSmooth = 0;//Slice smooth handle  by fxw
 reload:
         if(ff_check_operate(c->interrupt_callback,OPERATE_SEEK,NULL,NULL))
         {
             av_log(NULL,AV_LOG_ERROR,"read_data, new seek arrival,return immediately");
-            return AVERROR(EAGAIN);
+            return AVERROR(ENOMEDIUM);
         }
         
         if (!v->finished &&
@@ -1060,13 +1085,17 @@ reload:
             av_log(NULL, AV_LOG_DEBUG,
                    "skipping %d segments ahead, expired from playlists\n",
                    v->start_seq_no - v->cur_seq_no);
-            for(int i = v->cur_seq_no; i < v->start_seq_no; i++)
-            {
-                ff_send_message(c->interrupt_callback,MEDIA_INFO_DOWNLOAD_START,i);
-                ff_send_message(c->interrupt_callback,MEDIA_INFO_DOWNLOAD_ERROR,TIMEOUT);
+            if (v->start_seq_no - v->cur_seq_no < 50) {
+                for(int i = v->cur_seq_no; i < v->start_seq_no; i++)
+                {
+                    ff_send_message(c->interrupt_callback,MEDIA_INFO_DOWNLOAD_START,i);
+                    ff_send_message(c->interrupt_callback,MEDIA_INFO_DOWNLOAD_ERROR,TIMEOUT);
+                }
+            } else {
+                av_log(NULL, AV_LOG_ERROR, "skipping too much segments( %d ), don't notify.\n", v->start_seq_no - v->cur_seq_no);
             }
-            if(!v->finished&&c->misHeShiJie==1&&v->n_segments>4){
-                v->cur_seq_no = v->start_seq_no + 4;//+ v->n_segments - 1; //reduce jump times
+            if(!v->finished&&c->misHeShiJie==1&&v->n_segments>3){
+                v->cur_seq_no = v->start_seq_no + 3;//+ v->n_segments - 1; //reduce jump times
             }else{
                 v->cur_seq_no = v->start_seq_no;
             }
@@ -1092,16 +1121,35 @@ reload:
 #if HLS_DEBUG   
     av_log(NULL, AV_LOG_DEBUG,"%s:need reload\n",__FUNCTION__);                   
 #endif      
+            //---------------------------------------检测切片序号重置后切片重复(阿里)---------------------------------------------------------//
             //Slice smooth handle, EXT-X-MEDIA-SEQUENCE  become too smaller than last time suddenly
-            if(v->cur_seq_no-(v->start_seq_no + v->n_segments)>v->n_segments*10){
+            if(v->n_segments > 0 && (v->cur_seq_no-(v->start_seq_no + v->n_segments)>v->n_segments*10)){
                 sliceSmooth++;
                 av_log(NULL, AV_LOG_ERROR,"%s:slice smooth times=%d, v->cur_seq_no=%d, v->start_seq_no=%d, v->n_segments=%d\n",
                             __FUNCTION__, sliceSmooth, v->cur_seq_no, v->start_seq_no, v->n_segments);
             }
             if(sliceSmooth>=3){
+                //解决序号重置导致重复播放某些切片问题，默认直接从最后一个切片开始播放，若能从当前列表中找到最近一次获取数据的URL，则从该URL下一个切片开始播放
+                AVIOParams *params = c->interrupt_callback->ioparams;
                 v->cur_seq_no = v->start_seq_no;
+                if (params) {
+                    int index = search_segment_index(v, params->last_seq_url);
+                    /*最后一次获取的切片在当前M3U8表中是最后一个，而我们要取下一个切片，则需要再刷新表*/
+                    if (index >= v->n_segments - 1) {
+                        av_log(NULL, AV_LOG_ERROR,"%s:slice smooth last seq = %d, reload\n",__FUNCTION__, i);
+                        goto reload;
+                    } else if(index >= 0){
+                        v->cur_seq_no = v->start_seq_no + index + 1;
+                        av_log(NULL, AV_LOG_ERROR,"%s:slice smooth next seq = %d, reload\n",__FUNCTION__, v->cur_seq_no);
+                    }
+                    //保证当前切片序号不越界
+                    if (v->n_segments <= 0 || v->cur_seq_no < v->start_seq_no || v->cur_seq_no >= (v->start_seq_no+v->n_segments)) {
+                        av_log(NULL, AV_LOG_ERROR,"%s:slice seq out of bounds, cur_seq = %d\n",__FUNCTION__, v->cur_seq_no);
+                        v->cur_seq_no = v->start_seq_no + v->n_segments - 1;
+                    }
+                }
                 av_log(NULL, AV_LOG_ERROR,"%s:slice smooth to seq = %d\n",__FUNCTION__, v->cur_seq_no);
-            }else{
+            } else {
                 goto reload;
             }
             
@@ -1113,6 +1161,24 @@ reload:
         v->ts_first_time = 0;
         v->ts_last_time = 0;
         av_log(NULL, AV_LOG_DEBUG,"%s:need reload,v->cur_seq_no = %d,load_time = %lld",__FUNCTION__,v->cur_seq_no,v->load_time);
+
+        //---------------------------------------------检测Discontinuity后重复切片(CNTV)----------------------------------------------//
+        AVIOParams *params = c->interrupt_callback->ioparams;
+        struct segment *tmpseg = v->segments[v->cur_seq_no - v->start_seq_no];
+        if (!v->finished && params && sliceSmooth == 0 && (/*has_segment_discontinuity(v) || */(strcmp(tmpseg->url, params->last_seq_url) == 0))) {
+            int index = search_segment_index(v, params->last_seq_url);
+            av_log(NULL, AV_LOG_ERROR, "%s:search_segment_index seq = %d\n", __FUNCTION__, (v->start_seq_no + index));
+            if (index >= v->n_segments - 1) {
+                av_log(NULL, AV_LOG_ERROR,"%s:discontinuity last seq = %d, reload\n",__FUNCTION__, i);
+                reload_interval = 3000000;
+                av_usleep(200*1000);
+                goto reload;
+            } else if(index >= 0){
+                v->cur_seq_no = v->start_seq_no + index + 1;
+                av_log(NULL, AV_LOG_ERROR,"%s:discontinuity next seq = %d, reload\n",__FUNCTION__, v->cur_seq_no);
+            }
+        }
+        
         ret = open_input(c , v);
         if (ret < 0){
             av_log(NULL, AV_LOG_DEBUG, "HLS read data %d\n",ret);
@@ -1215,11 +1281,11 @@ reload:
              return AVERROR_EOF;
         }
 
-	 if(ff_check_operate(c->interrupt_callback,OPERATE_SEEK,NULL,NULL))
-	 {
-	          av_log(NULL,AV_LOG_ERROR,"read_data, new seek arrival,return immediately");
-	     	   return AVERROR(EAGAIN);
-	 }
+        if(ff_check_operate(c->interrupt_callback,OPERATE_SEEK,NULL,NULL))
+        {
+            av_log(NULL,AV_LOG_ERROR,"read_data, new seek arrival,return immediately");
+            return AVERROR(ENOMEDIUM);
+        }
        
         av_log(NULL,AV_LOG_DEBUG,"read:retry=%d,ret=%d",retry,ret);
     }
@@ -1228,6 +1294,13 @@ reload:
 #endif
     ffurl_close(v->input);
     v->input = NULL;
+    
+    //save the newest open_input url to check repeat play
+    AVIOParams *params = c->interrupt_callback->ioparams;
+    if (!v->finished && params && seg) {
+        strcpy(params->last_seq_url, seg->url);
+        av_log(NULL, AV_LOG_DEBUG,"%s: save url=(%s)",__FUNCTION__, params->last_seq_url);
+    }
 
     if(ret != -ETIMEDOUT)
     {
@@ -1271,6 +1344,8 @@ reload:
                 memcpy(v->url,c->bandwidth_info[index]->url,sizeof(v->url));
                 v->bandwidth = c->bandwidth_info[index]->bandwidth;
                 v->finished = 0;
+                // Notify bitrate change for fjcmcc
+                ff_send_message(c->interrupt_callback, MEDIA_INFO_BITRATE_CHANGE, v->bandwidth);
 #if HLS_DEBUG                
                 av_log(NULL,AV_LOG_DEBUG,"there is BandChanged,so recompute loadtime");
 #endif
@@ -1622,7 +1697,7 @@ start:
                     if(ff_check_operate(c->interrupt_callback,OPERATE_SEEK,NULL,NULL))
                     {
                         av_log(NULL,AV_LOG_ERROR,"hls_read_packet, new seek arrival,return immediately");
-                        return AVERROR(EAGAIN);
+                        return AVERROR(ENOMEDIUM);
                     }
                     
                     if (!url_feof(&var->pb) && ret != AVERROR_EOF){
@@ -1989,6 +2064,12 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
 #if HLS_DEBUG
         av_log(NULL,AV_LOG_DEBUG,"%s:start:timestamp=%lld",__FUNCTION__,timestamp);
 #endif
+
+    //reset last_seq_url, avoid can not seek back to current seq
+    AVIOParams *params = c->interrupt_callback->ioparams;
+    if (params) {
+        params->last_seq_url[0] = '\0';
+    }
 
     //add by hh for wase seek using new url
     if(flags & AVSEEK_FLAG_SEEK_USE_NEW_URL)

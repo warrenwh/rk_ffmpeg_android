@@ -50,6 +50,7 @@
 #undef NDEBUG
 #include <assert.h>
 
+#define FCC_SWITCH_ENABLE 0
 
 /**
  * @file
@@ -582,7 +583,7 @@ int avformat_open_input(AVFormatContext **ps, const char *filename, AVInputForma
     int ret = 0;
     AVDictionary *tmp = NULL;
     ID3v2ExtraMeta *id3v2_extra_meta = NULL;
-    av_log(NULL,AV_LOG_ERROR,"ffmpeg version 4-29\n");
+    av_log(NULL,AV_LOG_ERROR,"ffmpeg version 5-22\n");
     if (!s && !(s = avformat_alloc_context()))
         return AVERROR(ENOMEM);
     if (!s->av_class){
@@ -630,7 +631,7 @@ int avformat_open_input(AVFormatContext **ps, const char *filename, AVInputForma
     }
 
     /* e.g. AVFMT_NOFILE formats will not have a AVIOContext */
-    if (s->pb)
+    if (s->mIPTVControlProbe != 1 && s->pb)
         ff_id3v2_read(s, ID3v2_DEFAULT_MAGIC, &id3v2_extra_meta);
 
     if (!(s->flags&AVFMT_FLAG_PRIV_OPT) && s->iformat->read_header)
@@ -802,16 +803,9 @@ int ff_read_packet(AVFormatContext *s, AVPacket *pkt)
 
         force_codec_ids(s, st);
 
-		if(s->mIPTVControlProbe == 1)
-		{
-			//av_log(NULL, AV_LOG_ERROR, "mIPTVControlProbe == 1");
-			return ;
-		}
-		else
-		{
-			//av_log(NULL, AV_LOG_ERROR, "mIPTVControlProbe == 0");
-			;
-		}
+//通过avformat_open_input没有找到的program和stream，会通过
+//add stream到PMT中，这时候就需要检测raw_packet_buffer_remaining_size
+//的数据量在没有对应index包的情况下。这样就非常的耗时
 
         /* TODO: audio: time filter; video: frame reordering (pts != dts) */
         if (s->use_wallclock_as_timestamps)
@@ -1487,7 +1481,9 @@ static int try_decode_frame(AVStream *st, AVPacket *avpkt, AVDictionary **option
     if (!frame)
         return AVERROR(ENOMEM);
 
-    if (!avcodec_is_open(st->codec) && !st->info->found_decoder) {
+	//edit by xhr,???????codec????????,?????????????
+    //if (!avcodec_is_open(st->codec) && !st->info->found_decoder) {
+	if (!avcodec_is_open(st->codec)) {
         AVDictionary *thread_opt = NULL;
 
         codec = st->codec->codec ? st->codec->codec :
@@ -1636,7 +1632,7 @@ int av_read_frame(AVFormatContext *s, AVPacket *pkt)
 return_packet:
 
     st = s->streams[pkt->stream_index];
-	if((s->mIPTVControlProbe == 1) && !has_codec_parameters(st, NULL))
+	if((s->mIPTVControlProbe == 1) && !has_codec_parameters(st, NULL) && FCC_SWITCH_ENABLE)
 	{
 		av_log(NULL, AV_LOG_ERROR, ".......found_decoder = %d", st->info->found_decoder);
 		try_decode_frame(st, pkt, NULL);
@@ -2019,6 +2015,22 @@ int64_t ff_gen_search(AVFormatContext *s, int stream_index, int64_t target_ts,
         if (target_ts >= ts) {
             pos_min = pos;
             ts_min = ts;
+        }
+
+        //加快退出SEEK流程
+        if ((flags & AVSEEK_FLAG_FAST_TIME) && pos_min < pos_limit && (pos_max - pos_limit) < pos_min) {
+            if ((ts >= target_ts && ts - target_ts < 2000000) || (target_ts >= ts && target_ts - ts < 2000000)) {
+                int64_t approximate_keyframe_distance= pos_max - pos_limit;
+                int64_t pos_dest = av_rescale(target_ts - ts_min, pos_max - pos_min, ts_max - ts_min)
+                    + pos_min - approximate_keyframe_distance;
+                ts = ts + av_rescale(pos_dest - pos, ts_max - ts_min, pos_max - pos_min);
+                ts_min = ts;
+                ts_max = ts;
+                pos_min = pos_dest;
+                pos_max = pos_dest;
+                av_log(NULL, AV_LOG_ERROR, "fast seek quit, pos: %lld, pos_dest: %lld, ts: %lld, ts_dest: %lld\n", pos, pos_dest, ts, target_ts);
+                break;
+            }
         }
     }
 
@@ -2659,10 +2671,11 @@ int avformat_find_stream_info(AVFormatContext *ic, AVDictionary **options)
     int64_t old_offset = avio_tell(ic->pb);
     int orig_nb_streams = ic->nb_streams;        // new streams might appear, no options for those
     int flush_codecs = ic->probesize > 0;
-    int trynum = 5;
+    int trynum = 10;
     if(ic->pb)
         av_log(ic, AV_LOG_DEBUG, "File position before avformat_find_stream_info() is %"PRId64"\n", avio_tell(ic->pb));
-    
+    read_size = 0;   
+ 
 tryAgain:
 
     for(i=0;i<ic->nb_streams;i++) {
@@ -2689,7 +2702,7 @@ tryAgain:
 
                 if(st->parser != NULL)
                 {
-                    av_log(NULL,AV_LOG_ERROR,"avformat_find_stream_info: av_parser_init_callback");
+                    //av_log(NULL,AV_LOG_ERROR,"avformat_find_stream_info: av_parser_init_callback");
                     av_parser_init_callback(st->parser,
                         ic->interrupt_callback.callback,
                         ic->interrupt_callback.msg_callback,
@@ -2736,7 +2749,6 @@ tryAgain:
     }
 
     count = 0;
-    read_size = 0;
     for(;;) {
         if (ff_check_interrupt(&ic->interrupt_callback)){
             ret= AVERROR_EXIT;
@@ -2746,13 +2758,13 @@ tryAgain:
 
 		
 	 int video_find = 0;
-	 av_log(NULL, AV_LOG_ERROR, "ic->mIPTVControlProbe = %d",ic->mIPTVControlProbe);
+	 //av_log(NULL, AV_LOG_ERROR, "ic->mIPTVControlProbe = %d",ic->mIPTVControlProbe);
 	 for(i=0;i<ic->nb_streams;i++)
  	 {
  	    st = ic->streams[i];
 		if(has_codec_parameters_for_avformat(ic,st, NULL))
         {
-			if(st->codec->codec_type == 0)
+			if(st->codec->codec_type == AVMEDIA_TYPE_VIDEO)
 			{
 				video_find  = 1;
 			}
@@ -2764,7 +2776,8 @@ tryAgain:
 		}
  	 }
 
-	 if((i == ic->nb_streams && i != 0) || ((video_find == 1)&& (ic->mIPTVControlProbe == 1)))
+	 if((i == ic->nb_streams && i > 1 && video_find == 1 && (strncmp(ic->filename, "file/fd::", 9) != 0)) 
+            || ((video_find == 1)&& ((ic->mIPTVControlProbe == 1 && FCC_SWITCH_ENABLE) || (ic->mIPTVControlProbe == 2))))
 	 {
 	 	av_log(ic, AV_LOG_ERROR, "all stream has parameter ************** break");
 	 	break ;
@@ -2813,12 +2826,12 @@ tryAgain:
         if (read_size >= ic->probesize) {
             ret = count;
             av_log(ic, AV_LOG_ERROR, "Probe buffer size limit %d reached\n", ic->probesize);
-            for (i = 0; i < ic->nb_streams; i++)
-                if (!ic->streams[i]->r_frame_rate.num &&
-                    ic->streams[i]->info->duration_count <= 1)
-                    av_log(ic, AV_LOG_ERROR,
-                           "Stream #%d: not enough frames to estimate rate; "
-                           "consider increasing probesize\n", i);
+            //for (i = 0; i < ic->nb_streams; i++)
+              //  if (!ic->streams[i]->r_frame_rate.num &&
+                //    ic->streams[i]->info->duration_count <= 1)
+                    //av_log(ic, AV_LOG_ERROR,
+                    //       "Stream #%d: not enough frames to estimate rate; "
+                    //       "consider increasing probesize\n", i);
            if(ic->mIPTVControlProbe == 0)
            {
                if(trynum--<0)     

@@ -2011,8 +2011,15 @@ static int mpegts_read_header(AVFormatContext *s)
     /* read the first 8192 bytes to get packet size */
     av_log(NULL,AV_LOG_ERROR,"mpegts_read_header:ts_debug_flag=%d",s->ts_debug_flag);
     pos = avio_tell(pb);
-    len = avio_read(pb, buf, sizeof(buf));
-    ts->raw_packet_size = get_packet_size(buf, len);
+    if(s->mIPTVControlProbe == 1)
+    {
+	    ts->raw_packet_size = 188;
+    }
+    else
+    {
+    	len = avio_read(pb, buf, sizeof(buf));
+    	ts->raw_packet_size = get_packet_size(buf, len);
+    }
     if (ts->raw_packet_size <= 0) {
         av_log(s, AV_LOG_WARNING, "Could not detect TS packet size, defaulting to non-FEC/DVHS\n");
         ts->raw_packet_size = TS_PACKET_SIZE;
@@ -2034,7 +2041,10 @@ static int mpegts_read_header(AVFormatContext *s)
 
         mpegts_open_section_filter(ts, PAT_PID, pat_cb, ts, 1);
 
-        handle_packets(ts, s->probesize / ts->raw_packet_size);
+	if(s->mIPTVControlProbe != 1)
+	{
+        	handle_packets(ts, s->probesize / ts->raw_packet_size);
+	}
         /* if could not find service, enable auto_guess */
 
         ts->auto_guess = 1;

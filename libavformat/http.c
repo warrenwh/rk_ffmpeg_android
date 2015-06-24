@@ -45,7 +45,7 @@
 #define HTTP_DEBUG 1
 
 #define HTTP_TIMEOUT 2000
-#define HTTP_LIVE_ENABLE 0
+#define HTTP_LIVE_ENABLE 1
 
 typedef struct {
     const AVClass *class;
@@ -81,6 +81,7 @@ typedef struct {
     int mZeroRange;
 
     int mIsHttpLive;// http living
+    int mHttpLiveRetryCnt;// http living
 #if CONFIG_ZLIB
     int compressed;
     z_stream inflate_stream;
@@ -446,11 +447,12 @@ static int http_open_cnx(URLContext *h)
 
     av_log(h, AV_LOG_DEBUG, "http_open_cnx fail:code=%d,err = %d,ETIMEDOUT = %d",s->http_code,err,ETIMEDOUT);
     h->errcode = s->http_code;
-#if 0
     if(h->errcode != 0 && h->errcode > 0)
     {
-        ff_send_message(&h->interrupt_callback,MEDIA_INFO_DOWNLOAD_ERROR,h->errcode);
+        if ((h->errcode == 403) || (h->errcode == 404))
+            ff_send_message(&h->interrupt_callback,MEDIA_INFO_DOWNLOAD_ERROR,h->errcode);
     }
+#if 0
     av_log(h, AV_LOG_DEBUG, "http_open_cnx :*********err = %d,ETIMEDOUT = %d",err,ETIMEDOUT);
     if((err == -ETIMEDOUT) || (err == -101))
     {
@@ -486,6 +488,7 @@ static int http_open(URLContext *h, const char *uri, int flags)
     s->filesize = -1;
     s->mZeroRange = 0;
     s->mIsHttpLive = 0;
+    s->mHttpLiveRetryCnt = 0;
     
 #if HTTP_DEBUG
     av_log(h, AV_LOG_DEBUG, "http_open:uri = %s\n",uri);
@@ -851,8 +854,8 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
         //av_log(h, AV_LOG_DEBUG, "user_agent set \n");
 
         // CMCC anhui user-agent:Ysten/1.0.0 (Linux; U; Android 4.2.2; EC6106 Build/HuaWei)
-        // o￡??: Mozilla/4.0 (compatible; MS IE 6.0; (ziva))
-        // ??1?: AppleCoreMedia/1.0.0.9A405 (iPad; U; CPU OS 5_0_1 like Mac OS X; zh_cn)
+        // user agent: Mozilla/4.0 (compatible; MS IE 6.0; (ziva))
+        // user agent: AppleCoreMedia/1.0.0.9A405 (iPad; U; CPU OS 5_0_1 like Mac OS X; zh_cn)
         len += av_strlcatf(headers + len, sizeof(headers) - len,
                            "User-Agent: %s\r\n",
                            s->user_agent ? s->user_agent :"Mozilla/4.0 (compatible; MS IE 6.0; (ziva))");
@@ -866,9 +869,14 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
     // Note: we send this on purpose even when s->off is 0 when we're probing,
     // since it allows us to detect more reliably if a (non-conforming)
     // server supports seeking by analysing the reply headers.
-    // http直播不能带range
+    // http live has no range
 #if HTTP_LIVE_ENABLE
-    if(s->mIsHttpLive != 1)
+    if(s->mIsHttpLive == 1) {
+        av_log(NULL, AV_LOG_ERROR, "http living stream take (Range: bytes=0-)");
+        if (!has_header(s->headers, "\r\nRange: ") && !post)
+            len += av_strlcatf(headers + len, sizeof(headers) - len,
+                               "Range: bytes=0-\r\n");
+    } else
 #endif
     {
         if (!has_header(s->headers, "\r\nRange: ") && !post && (s->off > 0 || s->seekable == -1 ||(s->off==0&&s->mZeroRange==1)))
@@ -979,11 +987,12 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
 #endif
 
 #if HTTP_LIVE_ENABLE
-    //HTTP直播判断
-    if(off>0 && (s->filesize == -1) && (s->off == 0))
+    //HTTP直播判断, 如果判断状态为200，若出现连接失败后，则会重新置为非HTTP直播，而后会携带range，出现重复播/* && off > 0 && s->http_code == 200*/
+    if(s->filesize == -1 && ((s->off == 0 && s->mHlsConductor <= 0) || strstr(path, "hmd_video_duration=-1")))
     {
         s->mIsHttpLive = 1;
-        av_log(NULL,AV_LOG_ERROR,"http_connect: This is http living stream ? ");
+        s->off = off;
+        av_log(NULL,AV_LOG_ERROR,"http_connect: This is http living stream ? off = %lld", s->off);
         return 0;
     }
     else
@@ -996,7 +1005,7 @@ static int http_connect(URLContext *h, const char *path, const char *local_path,
 
 static int special_read(URLContext *h, uint8_t *buf, int size)
 {
-    HTTPContext *s = h->priv_data;    
+    HTTPContext *s = h->priv_data;
     uint8_t old_buf[BUFFER_SIZE];
     int old_buf_size = 0;    
     int64_t old_off = 0;
@@ -1070,8 +1079,32 @@ static int http_buf_read(URLContext *h, uint8_t *buf, int size)
 
     if(len <0 && s->mHlsConductor <= 0)
     {
-     av_log(NULL,AV_LOG_DEBUG,"%s:len=%d",__FUNCTION__,len);
-     len = special_read(h,buf,size);
+        if(ff_check_operate(&h->interrupt_callback,OPERATE_SEEK,NULL,NULL))
+        {
+            av_log(NULL,AV_LOG_ERROR,"http_buf_read, new seek arrival,return immediately");
+            return AVERROR(ENOMEDIUM);
+        }
+        
+        if (ff_check_interrupt(&h->interrupt_callback))
+        {
+            return AVERROR_EXIT;
+        }
+#if HTTP_LIVE_ENABLE
+        else if (s->mIsHttpLive == 1 && s->filesize == -1 && len == -110 && s->mHttpLiveRetryCnt < 6)
+        {
+            s->mHttpLiveRetryCnt ++;
+            av_log(NULL, AV_LOG_ERROR, "special_read: http living stream retry to http_buf_read directly");
+            return http_buf_read(h, buf, size);
+        }
+#endif
+        else
+        {
+            s->mHttpLiveRetryCnt = 0;
+            av_log(NULL,AV_LOG_DEBUG,"%s:len=%d",__FUNCTION__,len);
+            len = special_read(h,buf,size);
+        }
+    } else {
+        s->mHttpLiveRetryCnt = 0;
     }
 //    av_log(NULL,AV_LOG_DEBUG,"%s:len=%d,%d",__FUNCTION__,len,s->mFlvConductor);
     if(s->mFlvConductor > 0 || s->mmsh > 0)

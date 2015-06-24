@@ -45,6 +45,7 @@ typedef struct AVIOParams {
     void *hd;
     char url[4096];
     int redirect;
+    char last_seq_url[2048];
 } AVIOParams;
 
 /**

@@ -291,8 +291,10 @@ struct AVFormatContext;
 
 
 #define MEDIA_INFO_DOWNLOAD_START 10086
-#define MEDIA_INFO_DOWNLOAD_END  10087
+#define MEDIA_INFO_DOWNLOAD_END   10087
 #define MEDIA_INFO_DOWNLOAD_ERROR 10088
+#define MEDIA_INFO_BITRATE_CHANGE 10089
+#define MEDIA_INFO_SERVER_CHANGE  10090
 #define MEDIA_INFO_DOWNLOAD_TIMEOUT 99110
 
 
@@ -1208,7 +1210,8 @@ typedef struct AVFormatContext {
     /**
      * Remaining size available for raw_packet_buffer, in bytes.
      */
-#define RAW_PACKET_BUFFER_SIZE 2500000
+//edit by xhr. init is 2.5M.
+#define RAW_PACKET_BUFFER_SIZE 500000
     int raw_packet_buffer_remaining_size;
     int exit_flag;
     int mhlsdynamic;
@@ -1703,7 +1706,9 @@ void av_set_pts_info(AVStream *s, int pts_wrap_bits,
 #define AVSEEK_FLAG_FRAME    8 ///< seeking based on frame number
 #define AVSEEK_FLAG_READ_NEED_OPEN_NEW_URL 16  ///< for seek optimize with hls by ht
 #define AVSEEK_FLAG_SPECIAL_URL            32   ///< for Ysten or BestTv lookback special url
-#define AVSEEK_FLAG_SEEK_USE_NEW_URL  64
+#define AVSEEK_FLAG_SEEK_USE_NEW_URL       64
+#define AVSEEK_FLAG_FAST_TIME              128
+
 
 /**
  * @addtogroup lavf_encoding

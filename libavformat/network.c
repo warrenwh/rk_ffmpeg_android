@@ -165,14 +165,14 @@ int ff_network_wait_fd_timeout(int fd, int write, int64_t timeout, AVIOInterrupt
         if (ret != AVERROR(EAGAIN))
             return ret;
         if (timeout > 0) {
-	     /*
-	     * 检测是否有新的seek到来，有新的seek到来则直接返回，不需等待超时
-	     */
-	     if(ff_check_operate(int_cb,OPERATE_SEEK,NULL,NULL))
-	     {
-	           av_log(NULL,AV_LOG_ERROR,"ff_network_wait_fd_timeout: new seek arrival,return immediately");
-	     	    return AVERROR(EAGAIN);
-	     }
+    	     /*
+    	           * 检测是否有新的seek到来，有新的seek到来则直接返回，不需等待超时
+    	           */
+            if(ff_check_operate(int_cb,OPERATE_SEEK,NULL,NULL))
+            {
+                av_log(NULL,AV_LOG_ERROR,"ff_network_wait_fd_timeout: new seek arrival,return immediately");
+                return AVERROR(ENOMEDIUM);
+            }
             if (!wait_start)
                 wait_start = av_gettime();
             else if (av_gettime() - wait_start > timeout)

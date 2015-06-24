@@ -191,8 +191,8 @@ static inline int parse_nal_units(AVCodecParserContext *s,
 
     int i,flag = 0,end_off = 0,sps_off = 0,pps_off = 0,times = 0;
 
-    unsigned char *sps_buf;
-    unsigned char *pps_buf;
+    unsigned char *sps_buf = NULL;
+    unsigned char *pps_buf = NULL;
     int sps_size;
     int pps_size;
     
@@ -342,7 +342,7 @@ static inline int parse_nal_units(AVCodecParserContext *s,
                 if (times == 1)
                     sps_size += 4;
 
-                if ((sps_size > 50) || (pps_size > 20)) {
+                if ((sps_size > 100) || (pps_size > 50)) {
                     av_log(NULL,AV_LOG_ERROR,"sps_size  or pps_size error return ");
                     goto sps_pps_err;
                 }
@@ -364,7 +364,7 @@ static inline int parse_nal_units(AVCodecParserContext *s,
                     sps_buf[1] = 0x00;
                     sps_buf[2] = 0x00;
                     sps_buf[3] = 0x01;
-                    memcpy(sps_buf+4, buf+sps_off, sps_size);
+                    memcpy(sps_buf+4, buf+sps_off, sps_size-4);
                 } else {
                     memcpy(sps_buf, buf+sps_off, sps_size);
                 }
@@ -380,6 +380,17 @@ static inline int parse_nal_units(AVCodecParserContext *s,
                 h->first = 1;
             }
 sps_pps_err:
+            if(sps_buf != NULL)
+            {
+                av_free(sps_buf);
+                sps_buf = NULL;
+            }
+
+            if(pps_buf != NULL)
+            {
+                av_free(pps_buf);
+                pps_buf = NULL;
+            }
             break;
         case NAL_PPS:
             ff_h264_decode_picture_parameter_set(h, h->s.gb.size_in_bits);
