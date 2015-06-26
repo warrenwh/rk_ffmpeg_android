@@ -23,3 +23,14 @@ FFmpeg README
   #chmod 777 configure
   #chmod 777 build_32.sh
 * execute ./build_32.sh, then you will find libffmpeg.so in directory(./android/armv7-a/) 
+
+4) You Can Use Precompiled Library(libffmpeg.so)
+* You Can find libffmpeg.so in android/arm32/libffmpeg.so on the git hub
+
+5) How to Use libffmpeg.so in Your SDK
+* REPLACE vendor/<venderid>/common/vpu/lib/arm/<chip_id>/libffmpeg.so in your sdk 
+  note:<venderid> is vender name : such as amlgic allwinner rockchip
+  note:<chip_id>  is chip name : such as a20, s905,rk3368
+* MODIFIED frameworks/av/media/libmediaplayerservice/Android.mk : 
+	MODIFIED [BUILD_FF_PALYER := false] TO [BUILD_FF_PALYER := true]
+* make your android sdk
